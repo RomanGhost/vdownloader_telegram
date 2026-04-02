@@ -15,8 +15,10 @@ func (c *Client) GetFormats(ctx context.Context, url string) (*GetFormatsRespons
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
+	c.log.Debug("rpc get_formats", "url", url)
 	raw, err := c.call(ctx, queueGetFormats, GetFormatsRequest{URL: url})
 	if err != nil {
+		c.log.Error("rpc get_formats failed", "url", url, "err", err)
 		return nil, err
 	}
 	var resp GetFormatsResponse
@@ -24,8 +26,10 @@ func (c *Client) GetFormats(ctx context.Context, url string) (*GetFormatsRespons
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	if resp.Error != "" {
+		c.log.Warn("rpc get_formats error from worker", "url", url, "err", resp.Error)
 		return nil, fmt.Errorf("%s", resp.Error)
 	}
+	c.log.Info("rpc get_formats ok", "url", url, "title", resp.Title, "formats", len(resp.Formats))
 	return &resp, nil
 }
 
@@ -34,8 +38,10 @@ func (c *Client) Download(ctx context.Context, req DownloadRequest) (*DownloadRe
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
+	c.log.Debug("rpc download", "url", req.URL, "format", req.FormatArg)
 	raw, err := c.call(ctx, queueDownload, req)
 	if err != nil {
+		c.log.Error("rpc download failed", "url", req.URL, "err", err)
 		return nil, err
 	}
 	var resp DownloadResponse
@@ -43,8 +49,10 @@ func (c *Client) Download(ctx context.Context, req DownloadRequest) (*DownloadRe
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	if resp.Error != "" {
+		c.log.Warn("rpc download error from worker", "url", req.URL, "err", resp.Error)
 		return nil, fmt.Errorf("%s", resp.Error)
 	}
+	c.log.Info("rpc download queued", "url", req.URL, "job_id", resp.JobID)
 	return &resp, nil
 }
 

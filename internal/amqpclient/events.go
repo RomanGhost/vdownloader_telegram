@@ -28,8 +28,10 @@ func (c *Client) ConsumeCompleted(ctx context.Context) (<-chan CompletedEvent, e
 				}
 				var ev CompletedEvent
 				if err := json.Unmarshal(msg.Body, &ev); err != nil {
+					c.log.Error("decode completed event", "err", err)
 					continue
 				}
+				c.log.Info("completed event received", "job_id", ev.JobID, "status", ev.Status)
 				select {
 				case events <- ev:
 				case <-ctx.Done():

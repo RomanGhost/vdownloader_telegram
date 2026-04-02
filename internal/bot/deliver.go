@@ -75,12 +75,11 @@ func extractFilename(contentDisposition string) string {
 	return params["filename"]
 }
 
-// escapeMarkdown escapes characters special in Telegram's MarkdownV1.
-func escapeMarkdown(s string) string {
+// escapeHTML escapes characters special in Telegram's HTML parse mode.
+func escapeHTML(s string) string {
 	return strings.NewReplacer(
-		"*", "\\*",
-		"_", "\\_",
-		"`", "\\`",
-		"[", "\\[",
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
 	).Replace(s)
 }

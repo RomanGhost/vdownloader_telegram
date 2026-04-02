@@ -20,10 +20,11 @@ import (
 	"tgbot/internal/config"
 )
 
-// userState holds a URL and its title while the user is choosing a format.
+// userState holds a URL, title and available formats while the user is choosing.
 type userState struct {
-	URL   string
-	Title string
+	URL     string
+	Title   string
+	Formats []amqpclient.FormatMessage
 }
 
 // pendingJob tracks a running download so the completed event handler can notify the user.
@@ -59,7 +60,7 @@ func New(cfg config.Config, log *slog.Logger) (*Bot, error) {
 		jobs:   make(map[int64]*pendingJob),
 	}
 
-	worker, err := amqpclient.New(cfg.AMQPUrl)
+	worker, err := amqpclient.New(cfg.AMQPUrl, log)
 	if err != nil {
 		return nil, fmt.Errorf("connect to worker: %w", err)
 	}

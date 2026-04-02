@@ -10,7 +10,6 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
-	"tgbot/internal/amqpclient"
 )
 
 func (b *Bot) onStart(ctx context.Context, tg *bot.Bot, update *models.Update) {
@@ -62,16 +61,18 @@ func (b *Bot) onURL(ctx context.Context, tg *bot.Bot, update *models.Update) {
 	}
 
 	b.mu.Lock()
-	b.states[chatID] = &userState{URL: url, Title: resp.Title}
+	b.states[chatID] = &userState{URL: url, Title: resp.Title, Formats: resp.Formats}
 	b.mu.Unlock()
 
-	tg.EditMessageText(ctx, &bot.EditMessageTextParams{ //nolint:errcheck
+	if _, err := tg.EditMessageText(ctx, &bot.EditMessageTextParams{
 		ChatID:      chatID,
 		MessageID:   sent.ID,
-		Text:        fmt.Sprintf("*%s*\n\nSelect a format:", escapeMarkdown(resp.Title)),
-		ParseMode:   models.ParseModeMarkdown,
-		ReplyMarkup: buildFormatKeyboard(),
-	})
+		Text:        fmt.Sprintf("<b>%s</b>\n\nSelect a format:", escapeHTML(resp.Title)),
+		ParseMode:   models.ParseModeHTML,
+		ReplyMarkup: buildFormatKeyboard(resp.Formats),
+	}); err != nil {
+		b.log.Error("edit message with keyboard", "chat_id", chatID, "err", err)
+	}
 }
 
 // onCallback handles format-selection button taps.
@@ -83,16 +84,6 @@ func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update
 
 	chatID := cbq.Message.Message.Chat.ID
 	msgID := cbq.Message.Message.ID
-
-	// Parse preset index from callback data "fmt:N".
-	idx, err := strconv.Atoi(strings.TrimPrefix(cbq.Data, "fmt:"))
-	if err != nil || idx < 0 || idx >= len(presets) {
-		tg.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{ //nolint:errcheck
-			CallbackQueryID: cbq.ID,
-			Text:            "Unknown format",
-		})
-		return
-	}
 
 	b.mu.Lock()
 	state, ok := b.states[chatID]
@@ -107,36 +98,39 @@ func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update
 		return
 	}
 
+	// Parse preset index from callback data "fmt:N".
+	idx, err := strconv.Atoi(strings.TrimPrefix(cbq.Data, "fmt:"))
+	if err != nil || idx < 0 || idx >= len(state.Formats) {
+		tg.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{ //nolint:errcheck
+			CallbackQueryID: cbq.ID,
+			Text:            "Unknown format",
+		})
+		return
+	}
+
 	// Acknowledge the tap immediately so Telegram removes the loading spinner.
 	tg.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cbq.ID}) //nolint:errcheck
 
-	p := presets[idx]
+	f := state.Formats[idx]
+	label := formatLabel(f)
 
 	tg.EditMessageText(ctx, &bot.EditMessageTextParams{ //nolint:errcheck
 		ChatID:    chatID,
 		MessageID: msgID,
-		Text:      fmt.Sprintf("*%s*\n\nQueuing download: %s...", escapeMarkdown(state.Title), p.Label),
-		ParseMode: models.ParseModeMarkdown,
+		Text:      fmt.Sprintf("<b>%s</b>\n\nQueuing download: %s...", escapeHTML(state.Title), label),
+		ParseMode: models.ParseModeHTML,
 	})
 
 	dlCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	dlResp, err := b.worker.Download(dlCtx, amqpclient.DownloadRequest{
-		URL:          state.URL,
-		Title:        state.Title,
-		FormatArg:    p.Arg,
-		QualityLabel: p.QualityLabel,
-		AudioOnly:    p.AudioOnly,
-		MergeAudio:   p.MergeAudio,
-		OutputFormat: p.OutputFormat,
-	})
+	dlResp, err := b.worker.Download(dlCtx, formatToRequest(state.URL, state.Title, f))
 	if err != nil {
 		tg.EditMessageText(ctx, &bot.EditMessageTextParams{ //nolint:errcheck
 			ChatID:    chatID,
 			MessageID: msgID,
-			Text:      fmt.Sprintf("*%s*\n\nFailed to queue download:\n%s", escapeMarkdown(state.Title), err),
-			ParseMode: models.ParseModeMarkdown,
+			Text:      fmt.Sprintf("<b>%s</b>\n\nFailed to queue download:\n%s", escapeHTML(state.Title), err),
+			ParseMode: models.ParseModeHTML,
 		})
 		return
 	}
@@ -146,7 +140,7 @@ func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update
 		ChatID:    chatID,
 		MsgID:     msgID,
 		Title:     state.Title,
-		AudioOnly: p.AudioOnly,
+		AudioOnly: f.AudioOnly,
 	}
 	delete(b.states, chatID)
 	b.mu.Unlock()
@@ -154,7 +148,7 @@ func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update
 	tg.EditMessageText(ctx, &bot.EditMessageTextParams{ //nolint:errcheck
 		ChatID:    chatID,
 		MessageID: msgID,
-		Text:      fmt.Sprintf("*%s*\n\nDownloading %s (job #%d)...", escapeMarkdown(state.Title), p.Label, dlResp.JobID),
-		ParseMode: models.ParseModeMarkdown,
+		Text:      fmt.Sprintf("<b>%s</b>\n\nDownloading %s (job #%d)...", escapeHTML(state.Title), label, dlResp.JobID),
+		ParseMode: models.ParseModeHTML,
 	})
 }
