@@ -6,6 +6,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -17,7 +18,8 @@ import (
 func (b *Bot) sendFile(ctx context.Context, chatID int64, fileID, title string, audioOnly bool) error {
 	fileURL := b.cfg.FileServerURL + "/files/" + fileID
 
-	resp, err := http.Get(fileURL) //nolint:gosec // URL is config + server-supplied UUID
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Get(fileURL) //nolint:gosec // URL is config + server-supplied UUID
 	if err != nil {
 		return fmt.Errorf("fetch from file server: %w", err)
 	}

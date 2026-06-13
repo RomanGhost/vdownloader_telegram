@@ -9,7 +9,6 @@ import (
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
-
 )
 
 func (b *Bot) onStart(ctx context.Context, tg *bot.Bot, update *models.Update) {
@@ -32,7 +31,7 @@ func (b *Bot) onURL(ctx context.Context, tg *bot.Bot, update *models.Update) {
 	url := strings.TrimSpace(update.Message.Text)
 	chatID := update.Message.Chat.ID
 
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "www.") {
 		tg.SendMessage(ctx, &bot.SendMessageParams{ //nolint:errcheck
 			ChatID: chatID,
 			Text:   "Please send a valid URL starting with http:// or https://",

@@ -60,7 +60,7 @@ func New(cfg config.Config, log *slog.Logger) (*Bot, error) {
 		jobs:   make(map[int64]*pendingJob),
 	}
 
-	worker, err := amqpclient.New(cfg.AMQPUrl, log)
+	worker, err := amqpclient.New(cfg.AMQPURL, log)
 	if err != nil {
 		return nil, fmt.Errorf("connect to worker: %w", err)
 	}
