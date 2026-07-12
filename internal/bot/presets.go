@@ -6,10 +6,10 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
-	"tgbot/internal/amqpclient"
+	"tgbot/internal/workerclient"
 )
 
-func buildFormatKeyboard(formats []amqpclient.FormatMessage) *models.InlineKeyboardMarkup {
+func buildFormatKeyboard(formats []workerclient.FormatMessage) *models.InlineKeyboardMarkup {
 	var rows [][]models.InlineKeyboardButton
 	for i, f := range formats {
 		rows = append(rows, []models.InlineKeyboardButton{
@@ -20,7 +20,7 @@ func buildFormatKeyboard(formats []amqpclient.FormatMessage) *models.InlineKeybo
 }
 
 // formatLabel builds a human-readable button label for a yt-dlp format.
-func formatLabel(f amqpclient.FormatMessage) string {
+func formatLabel(f workerclient.FormatMessage) string {
 	var parts []string
 
 	quality := f.FormatNote
@@ -47,14 +47,14 @@ func formatLabel(f amqpclient.FormatMessage) string {
 }
 
 // formatToRequest builds a DownloadRequest for the chosen format.
-func formatToRequest(url, title string, f amqpclient.FormatMessage) amqpclient.DownloadRequest {
-	req := amqpclient.DownloadRequest{
+func formatToRequest(url, title string, f workerclient.FormatMessage) workerclient.DownloadRequest {
+	req := workerclient.DownloadRequest{
 		URL:          url,
 		Title:        title,
 		QualityLabel: qualityLabel(f),
-		AudioOnly:    f.AudioOnly,
+		AudioOnly:    isAudioOnly(f),
 	}
-	if f.VideoOnly {
+	if isVideoOnly(f) {
 		// Mux the video-only stream with the best available audio.
 		req.FormatArg = f.FormatID + "+bestaudio"
 		req.OutputFormat = "mp4"
@@ -64,7 +64,17 @@ func formatToRequest(url, title string, f amqpclient.FormatMessage) amqpclient.D
 	return req
 }
 
-func qualityLabel(f amqpclient.FormatMessage) string {
+// isAudioOnly reports whether the format carries audio but no video.
+func isAudioOnly(f workerclient.FormatMessage) bool {
+	return f.HaveAudio && !f.HaveVideo
+}
+
+// isVideoOnly reports whether the format carries video but no audio.
+func isVideoOnly(f workerclient.FormatMessage) bool {
+	return f.HaveVideo && !f.HaveAudio
+}
+
+func qualityLabel(f workerclient.FormatMessage) string {
 	if f.FormatNote != "" {
 		return f.FormatNote
 	}

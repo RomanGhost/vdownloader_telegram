@@ -42,7 +42,7 @@ func (b *Bot) onURL(ctx context.Context, tg *bot.Bot, update *models.Update) {
 	// Send a placeholder we can edit in-place instead of accumulating messages.
 	sent, err := tg.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: chatID,
-		Text:   "Fetching video info...",
+		Text:   "Fetching video info…",
 	})
 	if err != nil {
 		b.log.Error("send message", "err", err)
@@ -116,7 +116,7 @@ func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update
 	tg.EditMessageText(ctx, &bot.EditMessageTextParams{ //nolint:errcheck
 		ChatID:    chatID,
 		MessageID: msgID,
-		Text:      fmt.Sprintf("<b>%s</b>\n\nQueuing download: %s...", escapeHTML(state.Title), label),
+		Text:      fmt.Sprintf("<b>%s</b>\n\nQueuing download: %s…", escapeHTML(state.Title), label),
 		ParseMode: models.ParseModeHTML,
 	})
 
@@ -139,7 +139,7 @@ func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update
 		ChatID:    chatID,
 		MsgID:     msgID,
 		Title:     state.Title,
-		AudioOnly: f.AudioOnly,
+		AudioOnly: isAudioOnly(f),
 	}
 	delete(b.states, chatID)
 	b.mu.Unlock()
@@ -147,7 +147,7 @@ func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update
 	tg.EditMessageText(ctx, &bot.EditMessageTextParams{ //nolint:errcheck
 		ChatID:    chatID,
 		MessageID: msgID,
-		Text:      fmt.Sprintf("<b>%s</b>\n\nDownloading %s (job #%d)...", escapeHTML(state.Title), label, dlResp.JobID),
+		Text:      fmt.Sprintf("<b>%s</b>\n\nDownloading %s (job #%d)…", escapeHTML(state.Title), label, dlResp.JobID),
 		ParseMode: models.ParseModeHTML,
 	})
 }

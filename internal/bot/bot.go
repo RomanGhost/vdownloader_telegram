@@ -2,10 +2,10 @@
 //
 // User flow:
 //  1. User sends a video URL.
-//  2. Bot calls GetFormats RPC → shows an inline keyboard with format presets.
-//  3. User picks a format → bot calls Download RPC → edits message to "Downloading…".
-//  4. Worker publishes a CompletedEvent → bot downloads the file from the file server
-//     and sends it to the user, or reports an error.
+//  2. Bot calls GET /api/formats → shows an inline keyboard with format presets.
+//  3. User picks a format → bot calls POST /api/jobs → edits message to "Downloading…".
+//  4. Worker POSTs a CompletedEvent to the bot's webhook → bot sends the file (or a
+//     direct download link when the file exceeds Telegram's 50 MiB limit).
 package bot
 
 import (
@@ -16,15 +16,15 @@ import (
 
 	"github.com/go-telegram/bot"
 
-	"tgbot/internal/amqpclient"
 	"tgbot/internal/config"
+	"tgbot/internal/workerclient"
 )
 
 // userState holds a URL, title and available formats while the user is choosing.
 type userState struct {
 	URL     string
 	Title   string
-	Formats []amqpclient.FormatMessage
+	Formats []workerclient.FormatMessage
 }
 
 // pendingJob tracks a running download so the completed event handler can notify the user.
@@ -35,10 +35,10 @@ type pendingJob struct {
 	AudioOnly bool
 }
 
-// Bot is the Telegram bot wired to the vdownloader worker via RabbitMQ.
+// Bot is the Telegram bot wired to the vdownloader worker via HTTP.
 type Bot struct {
 	tg     *bot.Bot
-	worker *amqpclient.Client
+	worker *workerclient.Client
 	cfg    config.Config
 	log    *slog.Logger
 
@@ -47,7 +47,7 @@ type Bot struct {
 	jobs   map[int64]*pendingJob // jobID  → download in progress
 }
 
-// New creates the Bot, connects to Telegram and RabbitMQ, and registers all handlers.
+// New creates the Bot, connects to Telegram, and registers all handlers.
 func New(cfg config.Config, log *slog.Logger) (*Bot, error) {
 	if cfg.BotToken == "" {
 		return nil, fmt.Errorf("BOT_TOKEN is not set")
@@ -56,46 +56,32 @@ func New(cfg config.Config, log *slog.Logger) (*Bot, error) {
 	b := &Bot{
 		cfg:    cfg,
 		log:    log,
+		worker: workerclient.New(cfg.WorkerURL, log),
 		states: make(map[int64]*userState),
 		jobs:   make(map[int64]*pendingJob),
 	}
-
-	worker, err := amqpclient.New(cfg.AMQPURL, log)
-	if err != nil {
-		return nil, fmt.Errorf("connect to worker: %w", err)
-	}
-	b.worker = worker
 
 	tg, err := bot.New(cfg.BotToken,
 		bot.WithDefaultHandler(b.onURL),
 	)
 	if err != nil {
-		worker.Close()
 		return nil, fmt.Errorf("create telegram bot: %w", err)
 	}
 	b.tg = tg
-
 	b.registerHandlers()
 	return b, nil
 }
 
-// Run starts polling Telegram and consuming completion events.
+// Run starts the webhook HTTP server and Telegram polling.
 // It blocks until ctx is cancelled.
 func (b *Bot) Run(ctx context.Context) {
-	events, err := b.worker.ConsumeCompleted(ctx)
-	if err != nil {
-		b.log.Error("failed to subscribe to completed events", "err", err)
-	} else {
-		go b.handleCompletedEvents(ctx, events)
-	}
-
+	b.startWebhookServer(ctx)
 	b.tg.Start(ctx)
 }
 
-// Close releases AMQP resources.
-func (b *Bot) Close() {
-	b.worker.Close()
-}
+// Close is a no-op kept for API compatibility; the webhook server shuts down
+// via context cancellation in Run.
+func (b *Bot) Close() {}
 
 func (b *Bot) registerHandlers() {
 	b.tg.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypeExact, b.onStart)
