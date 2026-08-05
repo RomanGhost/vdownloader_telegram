@@ -10,6 +10,8 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 	"github.com/google/uuid"
+
+	"tgbot/internal/workerclient"
 )
 
 func (b *Bot) onStart(ctx context.Context, tg *bot.Bot, update *models.Update) {
@@ -61,34 +63,37 @@ func (b *Bot) onURL(ctx context.Context, tg *bot.Bot, update *models.Update) {
 	}
 
 	b.mu.Lock()
-	b.states[chatID] = &userState{URL: url, Title: resp.Title, Formats: resp.Formats}
+	b.states[chatID] = &userState{
+		URL:          url,
+		Title:        resp.Title,
+		VideoHeights: resp.VideoHeights,
+		AudioFormats: resp.AudioFormats,
+	}
 	b.mu.Unlock()
 
 	if _, err := tg.EditMessageText(ctx, &bot.EditMessageTextParams{
 		ChatID:      chatID,
 		MessageID:   sent.ID,
-		Text:        fmt.Sprintf("<b>%s</b>\n\nSelect a format:", escapeHTML(resp.Title)),
+		Text:        fmt.Sprintf("<b>%s</b>\n\nSelect a quality:", escapeHTML(resp.Title)),
 		ParseMode:   models.ParseModeHTML,
-		ReplyMarkup: buildFormatKeyboard(resp.Formats),
+		ReplyMarkup: buildQualityKeyboard(resp.VideoHeights),
 	}); err != nil {
 		b.log.Error("edit message with keyboard", "chat_id", chatID, "err", err)
 	}
 }
 
-// onCallback handles format-selection button taps.
-func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update) {
+// onQualityCallback handles step 1: a video quality tier or the "Audio only" pick.
+func (b *Bot) onQualityCallback(ctx context.Context, tg *bot.Bot, update *models.Update) {
 	cbq := update.CallbackQuery
 	if cbq == nil || cbq.Message.Message == nil {
 		return
 	}
-
 	chatID := cbq.Message.Message.Chat.ID
 	msgID := cbq.Message.Message.ID
 
 	b.mu.Lock()
 	state, ok := b.states[chatID]
 	b.mu.Unlock()
-
 	if !ok {
 		tg.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{ //nolint:errcheck
 			CallbackQueryID: cbq.ID,
@@ -98,21 +103,70 @@ func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update
 		return
 	}
 
-	// Parse preset index from callback data "fmt:N".
-	idx, err := strconv.Atoi(strings.TrimPrefix(cbq.Data, "fmt:"))
-	if err != nil || idx < 0 || idx >= len(state.Formats) {
-		tg.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{ //nolint:errcheck
-			CallbackQueryID: cbq.ID,
-			Text:            "Unknown format",
+	data := strings.TrimPrefix(cbq.Data, "q:")
+
+	if data == "audio" {
+		tg.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cbq.ID}) //nolint:errcheck
+		tg.EditMessageText(ctx, &bot.EditMessageTextParams{                                  //nolint:errcheck
+			ChatID:      chatID,
+			MessageID:   msgID,
+			Text:        fmt.Sprintf("<b>%s</b>\n\nSelect an audio format:", escapeHTML(state.Title)),
+			ParseMode:   models.ParseModeHTML,
+			ReplyMarkup: buildAudioFormatKeyboard(state.AudioFormats),
 		})
 		return
 	}
 
-	// Acknowledge the tap immediately so Telegram removes the loading spinner.
+	height, err := strconv.Atoi(data)
+	if err != nil || !containsInt(state.VideoHeights, height) {
+		tg.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{ //nolint:errcheck
+			CallbackQueryID: cbq.ID,
+			Text:            "Unknown quality",
+		})
+		return
+	}
 	tg.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cbq.ID}) //nolint:errcheck
 
-	f := state.Formats[idx]
-	label := formatLabel(f)
+	b.mu.Lock()
+	state.PendingHeight = height
+	b.mu.Unlock()
+
+	tg.EditMessageText(ctx, &bot.EditMessageTextParams{ //nolint:errcheck
+		ChatID:      chatID,
+		MessageID:   msgID,
+		Text:        fmt.Sprintf("<b>%s</b>\n\n%s — with or without audio?", escapeHTML(state.Title), heightLabel(height)),
+		ParseMode:   models.ParseModeHTML,
+		ReplyMarkup: buildVideoAudioKeyboard(),
+	})
+}
+
+// onVideoAudioCallback handles step 2 of the video branch: with or without audio.
+func (b *Bot) onVideoAudioCallback(ctx context.Context, tg *bot.Bot, update *models.Update) {
+	cbq := update.CallbackQuery
+	if cbq == nil || cbq.Message.Message == nil {
+		return
+	}
+	chatID := cbq.Message.Message.Chat.ID
+	msgID := cbq.Message.Message.ID
+
+	b.mu.Lock()
+	state, ok := b.states[chatID]
+	b.mu.Unlock()
+	if !ok || state.PendingHeight == 0 {
+		tg.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{ //nolint:errcheck
+			CallbackQueryID: cbq.ID,
+			Text:            "Session expired. Please send the URL again.",
+			ShowAlert:       true,
+		})
+		return
+	}
+	tg.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cbq.ID}) //nolint:errcheck
+
+	withAudio := strings.TrimPrefix(cbq.Data, "va:") == "1"
+	label := heightLabel(state.PendingHeight)
+	if !withAudio {
+		label += " (no audio)"
+	}
 
 	tg.EditMessageText(ctx, &bot.EditMessageTextParams{ //nolint:errcheck
 		ChatID:    chatID,
@@ -121,9 +175,66 @@ func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update
 		ParseMode: models.ParseModeHTML,
 	})
 
-	req := formatToRequest(state.URL, state.Title, f)
-	req.FileID = uuid.NewString()
+	req := workerclient.DownloadRequest{
+		FileID:    uuid.NewString(),
+		URL:       state.URL,
+		Title:     state.Title,
+		Kind:      "video",
+		Height:    state.PendingHeight,
+		WithAudio: withAudio,
+	}
+	b.queueJob(ctx, tg, chatID, msgID, state, req, false, label)
+}
 
+// onAudioFormatCallback handles step 2 of the audio branch: the target codec.
+func (b *Bot) onAudioFormatCallback(ctx context.Context, tg *bot.Bot, update *models.Update) {
+	cbq := update.CallbackQuery
+	if cbq == nil || cbq.Message.Message == nil {
+		return
+	}
+	chatID := cbq.Message.Message.Chat.ID
+	msgID := cbq.Message.Message.ID
+
+	b.mu.Lock()
+	state, ok := b.states[chatID]
+	b.mu.Unlock()
+	if !ok {
+		tg.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{ //nolint:errcheck
+			CallbackQueryID: cbq.ID,
+			Text:            "Session expired. Please send the URL again.",
+			ShowAlert:       true,
+		})
+		return
+	}
+	tg.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cbq.ID}) //nolint:errcheck
+
+	audioFormat := strings.TrimPrefix(cbq.Data, "af:")
+	label := strings.ToUpper(audioFormat) + " audio"
+
+	tg.EditMessageText(ctx, &bot.EditMessageTextParams{ //nolint:errcheck
+		ChatID:    chatID,
+		MessageID: msgID,
+		Text:      fmt.Sprintf("<b>%s</b>\n\nQueuing download: %s…", escapeHTML(state.Title), label),
+		ParseMode: models.ParseModeHTML,
+	})
+
+	req := workerclient.DownloadRequest{
+		FileID:      uuid.NewString(),
+		URL:         state.URL,
+		Title:       state.Title,
+		Kind:        "audio",
+		AudioFormat: audioFormat,
+	}
+	b.queueJob(ctx, tg, chatID, msgID, state, req, true, label)
+}
+
+// queueJob publishes req to Kafka, registers the pending job, clears the
+// user's state, and edits the status message to reflect progress. Shared by
+// the video and audio branches once they've built their DownloadRequest.
+func (b *Bot) queueJob(
+	ctx context.Context, tg *bot.Bot, chatID int64, msgID int,
+	state *userState, req workerclient.DownloadRequest, audioOnly bool, label string,
+) {
 	dlCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
@@ -138,12 +249,7 @@ func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update
 	}
 
 	b.mu.Lock()
-	b.jobs[req.FileID] = &pendingJob{
-		ChatID:    chatID,
-		MsgID:     msgID,
-		Title:     state.Title,
-		AudioOnly: isAudioOnly(f),
-	}
+	b.jobs[req.FileID] = &pendingJob{ChatID: chatID, MsgID: msgID, Title: state.Title, AudioOnly: audioOnly}
 	delete(b.states, chatID)
 	b.mu.Unlock()
 
@@ -153,4 +259,13 @@ func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update
 		Text:      fmt.Sprintf("<b>%s</b>\n\nDownloading %s…", escapeHTML(state.Title), label),
 		ParseMode: models.ParseModeHTML,
 	})
+}
+
+func containsInt(vals []int, v int) bool {
+	for _, x := range vals {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
