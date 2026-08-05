@@ -3,9 +3,11 @@
 // User flow:
 //  1. User sends a video URL.
 //  2. Bot calls GET /api/formats → shows an inline keyboard with format presets.
-//  3. User picks a format → bot calls POST /api/jobs → edits message to "Downloading…".
-//  4. Worker POSTs a CompletedEvent to the bot's webhook → bot sends the file (or a
-//     direct download link when the file exceeds Telegram's 50 MiB limit).
+//  3. User picks a format → bot publishes a job request to Kafka → edits message
+//     to "Downloading…".
+//  4. Worker publishes the completed job's file_id to Kafka → bot fetches the
+//     outcome via GET /api/jobs/{file_id} and sends the file (or a direct download
+//     link when the file exceeds Telegram's 50 MiB limit).
 package bot
 
 import (
@@ -15,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/go-telegram/bot"
+	kafkago "github.com/segmentio/kafka-go"
 
 	"tgbot/internal/config"
 	"tgbot/internal/workerclient"
@@ -35,16 +38,18 @@ type pendingJob struct {
 	AudioOnly bool
 }
 
-// Bot is the Telegram bot wired to the vdownloader worker via HTTP.
+// Bot is the Telegram bot wired to the vdownloader worker via Kafka (job
+// submission and completion) and HTTP (formats lookup, job status, file download).
 type Bot struct {
-	tg     *bot.Bot
-	worker *workerclient.Client
-	cfg    config.Config
-	log    *slog.Logger
+	tg         *bot.Bot
+	worker     *workerclient.Client
+	jobsWriter *kafkago.Writer
+	cfg        config.Config
+	log        *slog.Logger
 
 	mu     sync.Mutex
-	states map[int64]*userState  // chatID → awaiting format selection
-	jobs   map[int64]*pendingJob // jobID  → download in progress
+	states map[int64]*userState   // chatID  → awaiting format selection
+	jobs   map[string]*pendingJob // file_id → download in progress
 }
 
 // New creates the Bot, connects to Telegram, and registers all handlers.
@@ -57,8 +62,13 @@ func New(cfg config.Config, log *slog.Logger) (*Bot, error) {
 		cfg:    cfg,
 		log:    log,
 		worker: workerclient.New(cfg.WorkerURL, log),
+		jobsWriter: &kafkago.Writer{
+			Addr:     kafkago.TCP(cfg.KafkaBrokersList()...),
+			Topic:    cfg.KafkaJobsTopic,
+			Balancer: &kafkago.LeastBytes{},
+		},
 		states: make(map[int64]*userState),
-		jobs:   make(map[int64]*pendingJob),
+		jobs:   make(map[string]*pendingJob),
 	}
 
 	tg, err := bot.New(cfg.BotToken,
@@ -72,16 +82,19 @@ func New(cfg config.Config, log *slog.Logger) (*Bot, error) {
 	return b, nil
 }
 
-// Run starts the webhook HTTP server and Telegram polling.
+// Run starts the Kafka consumer and Telegram polling.
 // It blocks until ctx is cancelled.
 func (b *Bot) Run(ctx context.Context) {
-	b.startWebhookServer(ctx)
+	b.startKafkaConsumer(ctx)
 	b.tg.Start(ctx)
 }
 
-// Close is a no-op kept for API compatibility; the webhook server shuts down
-// via context cancellation in Run.
-func (b *Bot) Close() {}
+// Close flushes and closes the Kafka job-requests writer.
+func (b *Bot) Close() {
+	if err := b.jobsWriter.Close(); err != nil {
+		b.log.Error("close kafka jobs writer", "err", err)
+	}
+}
 
 func (b *Bot) registerHandlers() {
 	b.tg.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypeExact, b.onStart)

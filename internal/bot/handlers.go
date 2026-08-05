@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+	"github.com/google/uuid"
 )
 
 func (b *Bot) onStart(ctx context.Context, tg *bot.Bot, update *models.Update) {
@@ -120,11 +121,13 @@ func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update
 		ParseMode: models.ParseModeHTML,
 	})
 
+	req := formatToRequest(state.URL, state.Title, f)
+	req.FileID = uuid.NewString()
+
 	dlCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	dlResp, err := b.worker.Download(dlCtx, formatToRequest(state.URL, state.Title, f))
-	if err != nil {
+	if err := b.publishJobRequest(dlCtx, req); err != nil {
 		tg.EditMessageText(ctx, &bot.EditMessageTextParams{ //nolint:errcheck
 			ChatID:    chatID,
 			MessageID: msgID,
@@ -135,7 +138,7 @@ func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update
 	}
 
 	b.mu.Lock()
-	b.jobs[dlResp.JobID] = &pendingJob{
+	b.jobs[req.FileID] = &pendingJob{
 		ChatID:    chatID,
 		MsgID:     msgID,
 		Title:     state.Title,
@@ -147,7 +150,7 @@ func (b *Bot) onCallback(ctx context.Context, tg *bot.Bot, update *models.Update
 	tg.EditMessageText(ctx, &bot.EditMessageTextParams{ //nolint:errcheck
 		ChatID:    chatID,
 		MessageID: msgID,
-		Text:      fmt.Sprintf("<b>%s</b>\n\nDownloading %s (job #%d)…", escapeHTML(state.Title), label, dlResp.JobID),
+		Text:      fmt.Sprintf("<b>%s</b>\n\nDownloading %s…", escapeHTML(state.Title), label),
 		ParseMode: models.ParseModeHTML,
 	})
 }
