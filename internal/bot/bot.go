@@ -33,6 +33,7 @@ import (
 type userState struct {
 	URL           string
 	Title         string
+	Duration      float64 // seconds; 0 when the source doesn't report it
 	VideoHeights  []int
 	AudioFormats  []string
 	PendingHeight int

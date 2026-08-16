@@ -21,6 +21,7 @@ import (
 // ("mp3" first, the default).
 type GetFormatsResponse struct {
 	Title        string   `json:"title"`
+	Duration     float64  `json:"duration"` // seconds; 0 when the source doesn't report it
 	VideoHeights []int    `json:"video_heights"`
 	AudioFormats []string `json:"audio_formats"`
 	Error        string   `json:"error,omitempty"`
@@ -32,10 +33,11 @@ type GetFormatsResponse struct {
 //
 // Kind is "video" (Height + WithAudio apply) or "audio" (AudioFormat applies).
 type DownloadRequest struct {
-	FileID string `json:"file_id"`
-	URL    string `json:"url"`
-	Title  string `json:"title"`
-	Kind   string `json:"kind"`
+	FileID   string  `json:"file_id"`
+	URL      string  `json:"url"`
+	Title    string  `json:"title"`
+	Duration float64 `json:"duration,omitempty"` // seconds, echoed back from GetFormatsResponse
+	Kind     string  `json:"kind"`
 
 	Height    int  `json:"height,omitempty"`
 	WithAudio bool `json:"with_audio,omitempty"`

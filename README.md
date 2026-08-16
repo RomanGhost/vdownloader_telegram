@@ -43,7 +43,9 @@ No inbound port needed — the bot only makes outbound calls (Telegram long-poll
 
 ## Kafka contract
 
-Shares the wire format documented in [vdownloader_worker/README.md#kafka-contract](../vdownloader_worker/README.md#kafka-contract). Go types live in [internal/workerclient/client.go](internal/workerclient/client.go) (`DownloadRequest`, published to `KAFKA_JOBS_TOPIC`) and [internal/bot/kafka.go](internal/bot/kafka.go) (`completedMessage`, consumed from `KAFKA_TOPIC`).
+Shares the wire format documented in [vdownloader_worker/README.md#kafka-contract](../vdownloader_worker/README.md#kafka-contract). Go types live in [internal/workerclient/client.go](internal/workerclient/client.go) (`DownloadRequest`, published to `KAFKA_JOBS_TOPIC`; `GetFormatsResponse`, read from `GET /api/formats`) and [internal/bot/kafka.go](internal/bot/kafka.go) (`completedMessage`, consumed from `KAFKA_TOPIC`).
+
+`DownloadRequest.Duration` is echoed straight from `GetFormatsResponse.Duration` (captured in `userState` when the format list is first fetched) so the worker can size its download timeout without a second `yt-dlp -J` call.
 
 The bot generates `file_id` itself (`uuid.NewString()`) when publishing a job request, and keeps an in-memory map `file_id → pendingJob` (chat/message to edit, title, whether it's an audio delivery) so it knows what to do when the matching completion event arrives. This map is not persisted — a bot restart loses track of jobs in flight; the worker still finishes them, but no one will notify the user.
 
@@ -65,10 +67,29 @@ The bot generates `file_id` itself (`uuid.NewString()`) when publishing a job re
     │   ├── bot.go                  # Bot struct, handler registration, Kafka writer setup
     │   ├── handlers.go              # /start, URL intake, quality/audio callback handlers
     │   ├── presets.go               # Inline-keyboard builders for both selection steps
+    │   ├── presets_test.go
     │   ├── kafka.go                 # Completion consumer + job-request publisher
-    │   └── deliver.go               # File delivery (size check, SendAudio/SendDocument)
+    │   ├── deliver.go               # File delivery (size check, SendAudio/SendDocument)
+    │   └── deliver_test.go
     ├── config/
-    │   └── config.go                # Env var loading
+    │   ├── config.go                # Env var loading
+    │   └── config_test.go
     └── workerclient/
-        └── client.go                # HTTP client for the worker's REST API
+        ├── client.go                # HTTP client for the worker's REST API
+        └── client_test.go
 ```
+
+## Testing
+
+```bash
+go test ./...
+```
+
+No live Telegram bot, worker, or Kafka needed:
+
+- `internal/config/config_test.go` — env var defaults/overrides, `KafkaBrokersList` splitting.
+- `internal/bot/presets_test.go` — inline-keyboard builders (`buildQualityKeyboard` including the "no video tiers, audio-only still offered" case), `heightLabel`, `containsInt`.
+- `internal/bot/deliver_test.go` — `extractFilename` (Content-Disposition parsing), `escapeHTML`.
+- `internal/workerclient/client_test.go` — `GetFormats`/`GetJob` success and error paths against an `httptest.Server` standing in for the worker.
+
+Not covered: the `bot.HandlerType*` callback handlers in `handlers.go` (they take the `go-telegram/bot` library's own types, e.g. `*models.Update`, which aren't practical to construct without a real bot session) and the Kafka consume loop in `kafka.go`. Those paths are exercised by the [repo root's end-to-end smoke test](../README.md#testing) instead — though that test only covers the web UI's submission path, not a real Telegram interaction, so a manual check via the actual bot is still worthwhile before deploying a change that touches `handlers.go` or `kafka.go`.

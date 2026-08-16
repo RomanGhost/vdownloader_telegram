@@ -66,6 +66,7 @@ func (b *Bot) onURL(ctx context.Context, tg *bot.Bot, update *models.Update) {
 	b.states[chatID] = &userState{
 		URL:          url,
 		Title:        resp.Title,
+		Duration:     resp.Duration,
 		VideoHeights: resp.VideoHeights,
 		AudioFormats: resp.AudioFormats,
 	}
@@ -179,6 +180,7 @@ func (b *Bot) onVideoAudioCallback(ctx context.Context, tg *bot.Bot, update *mod
 		FileID:    uuid.NewString(),
 		URL:       state.URL,
 		Title:     state.Title,
+		Duration:  state.Duration,
 		Kind:      "video",
 		Height:    state.PendingHeight,
 		WithAudio: withAudio,
@@ -222,6 +224,7 @@ func (b *Bot) onAudioFormatCallback(ctx context.Context, tg *bot.Bot, update *mo
 		FileID:      uuid.NewString(),
 		URL:         state.URL,
 		Title:       state.Title,
+		Duration:    state.Duration,
 		Kind:        "audio",
 		AudioFormat: audioFormat,
 	}
