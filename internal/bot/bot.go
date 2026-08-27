@@ -7,11 +7,11 @@
 //     source's real max) plus an "Audio only" entry.
 //  3. Video tier picked → second keyboard: with audio / without audio.
 //     Audio only picked → second keyboard: mp3 (default) / m4a / opus / wav.
-//  4. Bot publishes the resulting job request to Kafka → edits message to
-//     "Downloading…".
-//  5. Worker publishes the completed job's file_id to Kafka → bot fetches the
-//     outcome via GET /api/jobs/{file_id} and sends the file (or a direct download
-//     link when the file exceeds Telegram's 50 MiB limit).
+//  4. Bot publishes the resulting job request to the "video.jobs" RabbitMQ
+//     queue → edits message to "Downloading…".
+//  5. Worker publishes the completed job's file_id to "video.completed" → bot
+//     fetches the outcome via GET /api/jobs/{file_id} and sends the file (or a
+//     direct download link when the file exceeds Telegram's 50 MiB limit).
 package bot
 
 import (
@@ -21,9 +21,9 @@ import (
 	"sync"
 
 	"github.com/go-telegram/bot"
-	kafkago "github.com/segmentio/kafka-go"
 
 	"tgbot/internal/config"
+	"tgbot/internal/mq"
 	"tgbot/internal/workerclient"
 )
 
@@ -47,36 +47,38 @@ type pendingJob struct {
 	AudioOnly bool
 }
 
-// Bot is the Telegram bot wired to the vdownloader worker via Kafka (job
+// Bot is the Telegram bot wired to the vdownloader worker via RabbitMQ (job
 // submission and completion) and HTTP (formats lookup, job status, file download).
 type Bot struct {
-	tg         *bot.Bot
-	worker     *workerclient.Client
-	jobsWriter *kafkago.Writer
-	cfg        config.Config
-	log        *slog.Logger
+	tg     *bot.Bot
+	worker *workerclient.Client
+	pub    *mq.Publisher // publishes job requests to "video.jobs"
+	sub    *mq.Consumer  // consumes completions from "video.completed"
+	cfg    config.Config
+	log    *slog.Logger
 
 	mu     sync.Mutex
 	states map[int64]*userState   // chatID  → awaiting format selection
 	jobs   map[string]*pendingJob // file_id → download in progress
 }
 
-// New creates the Bot, connects to Telegram, and registers all handlers.
+// New creates the Bot, connects to Telegram and RabbitMQ, and registers all handlers.
 func New(cfg config.Config, log *slog.Logger) (*Bot, error) {
 	if cfg.BotToken == "" {
 		return nil, fmt.Errorf("BOT_TOKEN is not set")
+	}
+
+	pub, err := mq.NewPublisher(cfg.RabbitURL, mq.QueueJobs)
+	if err != nil {
+		return nil, fmt.Errorf("connect rabbitmq: %w", err)
 	}
 
 	b := &Bot{
 		cfg:    cfg,
 		log:    log,
 		worker: workerclient.New(cfg.WorkerURL, log),
-		jobsWriter: &kafkago.Writer{
-			Addr:                   kafkago.TCP(cfg.KafkaBrokersList()...),
-			Topic:                  cfg.KafkaJobsTopic,
-			Balancer:               &kafkago.LeastBytes{},
-			AllowAutoTopicCreation: true,
-		},
+		pub:    pub,
+		sub:    mq.NewConsumer(cfg.RabbitURL, mq.QueueCompleted, "vdownloader-telegram"),
 		states: make(map[int64]*userState),
 		jobs:   make(map[string]*pendingJob),
 	}
@@ -92,17 +94,17 @@ func New(cfg config.Config, log *slog.Logger) (*Bot, error) {
 	return b, nil
 }
 
-// Run starts the Kafka consumer and Telegram polling.
+// Run starts the completion consumer and Telegram polling.
 // It blocks until ctx is cancelled.
 func (b *Bot) Run(ctx context.Context) {
-	b.startKafkaConsumer(ctx)
+	go b.sub.Consume(ctx, b.log, b.handleCompleted)
 	b.tg.Start(ctx)
 }
 
-// Close flushes and closes the Kafka job-requests writer.
+// Close closes the RabbitMQ job-requests publisher.
 func (b *Bot) Close() {
-	if err := b.jobsWriter.Close(); err != nil {
-		b.log.Error("close kafka jobs writer", "err", err)
+	if err := b.pub.Close(); err != nil {
+		b.log.Error("close rabbitmq publisher", "err", err)
 	}
 }
 

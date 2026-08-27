@@ -3,61 +3,31 @@ package bot
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
-	kafkago "github.com/segmentio/kafka-go"
 
 	"tgbot/internal/workerclient"
 )
 
-// completedMessage mirrors the JSON value the worker publishes to the topic.
+// completedMessage mirrors the JSON body the worker publishes to "video.completed".
 type completedMessage struct {
 	FileID string `json:"file_id"`
 }
 
-// startKafkaConsumer reads completed job IDs from Kafka and dispatches file
-// delivery. It blocks until ctx is cancelled.
-func (b *Bot) startKafkaConsumer(ctx context.Context) {
-	reader := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers: b.cfg.KafkaBrokersList(),
-		Topic:   b.cfg.KafkaTopic,
-		GroupID: "vdownloader-telegram",
-	})
-
-	go func() {
-		<-ctx.Done()
-		if err := reader.Close(); err != nil {
-			b.log.Error("kafka reader close", "err", err)
-		}
-	}()
-
-	go func() {
-		b.log.Info("kafka consumer listening", "brokers", b.cfg.KafkaBrokers, "topic", b.cfg.KafkaTopic)
-		for {
-			msg, err := reader.ReadMessage(ctx)
-			if err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, kafkago.ErrGroupClosed) {
-					return
-				}
-				b.log.Error("kafka read message", "err", err)
-				continue
-			}
-
-			var event completedMessage
-			if err := json.Unmarshal(msg.Value, &event); err != nil {
-				b.log.Warn("kafka: bad payload", "err", err)
-				continue
-			}
-
-			b.log.Info("kafka message received", "file_id", event.FileID)
-			// Use a fresh context so the upload is not cancelled by consumer shutdown.
-			go b.processCompleted(context.Background(), event.FileID)
-		}
-	}()
+// handleCompleted is the "video.completed" consumer callback: it parses the
+// finished job's file_id and hands off to processCompleted on a fresh context
+// so an in-flight upload isn't cancelled when the consumer shuts down.
+func (b *Bot) handleCompleted(_ context.Context, body []byte) {
+	var event completedMessage
+	if err := json.Unmarshal(body, &event); err != nil {
+		b.log.Warn("mq: bad completion payload", "err", err)
+		return
+	}
+	b.log.Info("mq: completion received", "file_id", event.FileID)
+	go b.processCompleted(context.Background(), event.FileID)
 }
 
 func (b *Bot) processCompleted(ctx context.Context, fileID string) {
@@ -110,16 +80,13 @@ func (b *Bot) processCompleted(ctx context.Context, fileID string) {
 	editText(fmt.Sprintf("<b>%s</b>\n\nDone! ✓", escapeHTML(job.Title)))
 }
 
-// publishJobRequest sends a download job request to the worker's job-requests topic.
+// publishJobRequest publishes req to the "video.jobs" queue for the worker to pick up.
 func (b *Bot) publishJobRequest(ctx context.Context, req workerclient.DownloadRequest) error {
 	value, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal job request: %w", err)
 	}
-	return b.jobsWriter.WriteMessages(ctx, kafkago.Message{
-		Key:   []byte(req.FileID),
-		Value: value,
-	})
+	return b.pub.Publish(ctx, value)
 }
 
 // logValue satisfies slog.LogValuer so Bot can be used in structured log lines.

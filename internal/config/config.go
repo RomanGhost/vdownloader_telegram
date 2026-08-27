@@ -2,7 +2,6 @@ package config
 
 import (
 	"os"
-	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -18,33 +17,20 @@ type Config struct {
 	// Env: WORKER_URL  Default: http://localhost:8080
 	WorkerURL string
 
-	// KafkaBrokers is a comma-separated list of Kafka broker addresses.
-	// Env: KAFKA_BROKERS  Default: localhost:9092
-	KafkaBrokers string
-
-	// KafkaTopic is the topic job completion notifications are read from.
-	// Env: KAFKA_TOPIC  Default: video.completed
-	KafkaTopic string
-
-	// KafkaJobsTopic is the topic download job requests are published to.
-	// Env: KAFKA_JOBS_TOPIC  Default: video.jobs
-	KafkaJobsTopic string
-}
-
-// KafkaBrokersList splits KafkaBrokers into individual broker addresses.
-func (c Config) KafkaBrokersList() []string {
-	return strings.Split(c.KafkaBrokers, ",")
+	// RabbitURL is the RabbitMQ connection URL. The bot publishes job requests
+	// to the "video.jobs" queue and consumes completions from "video.completed"
+	// (queue names are constants in internal/mq).
+	// Env: RABBITMQ_URL  Default: amqp://guest:guest@localhost:5672/
+	RabbitURL string
 }
 
 // Load reads .env (if present) and returns the populated Config.
 func Load() Config {
 	_ = godotenv.Load()
 	return Config{
-		BotToken:       getenv("BOT_TOKEN", ""),
-		WorkerURL:      getenv("WORKER_URL", "http://localhost:8080"),
-		KafkaBrokers:   getenv("KAFKA_BROKERS", "localhost:9092"),
-		KafkaTopic:     getenv("KAFKA_TOPIC", "video.completed"),
-		KafkaJobsTopic: getenv("KAFKA_JOBS_TOPIC", "video.jobs"),
+		BotToken:  getenv("BOT_TOKEN", ""),
+		WorkerURL: getenv("WORKER_URL", "http://localhost:8080"),
+		RabbitURL: getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
 	}
 }
 

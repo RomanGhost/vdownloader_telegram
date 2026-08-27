@@ -231,9 +231,9 @@ func (b *Bot) onAudioFormatCallback(ctx context.Context, tg *bot.Bot, update *mo
 	b.queueJob(ctx, tg, chatID, msgID, state, req, true, label)
 }
 
-// queueJob publishes req to Kafka, registers the pending job, clears the
-// user's state, and edits the status message to reflect progress. Shared by
-// the video and audio branches once they've built their DownloadRequest.
+// queueJob publishes req to the "video.jobs" queue, registers the pending job,
+// clears the user's state, and edits the status message to reflect progress.
+// Shared by the video and audio branches once they've built their DownloadRequest.
 func (b *Bot) queueJob(
 	ctx context.Context, tg *bot.Bot, chatID int64, msgID int,
 	state *userState, req workerclient.DownloadRequest, audioOnly bool, label string,
