@@ -2,74 +2,57 @@ package bot
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/go-telegram/bot/models"
-
-	"tgbot/internal/amqpclient"
 )
 
-func buildFormatKeyboard(formats []amqpclient.FormatMessage) *models.InlineKeyboardMarkup {
+// buildQualityKeyboard renders step 1: one button per available video
+// quality tier plus a trailing "Audio only" entry.
+func buildQualityKeyboard(videoHeights []int) *models.InlineKeyboardMarkup {
 	var rows [][]models.InlineKeyboardButton
-	for i, f := range formats {
+	for _, h := range videoHeights {
 		rows = append(rows, []models.InlineKeyboardButton{
-			{Text: formatLabel(f), CallbackData: fmt.Sprintf("fmt:%d", i)},
+			{Text: heightLabel(h), CallbackData: fmt.Sprintf("q:%d", h)},
+		})
+	}
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: "🎵 Audio only", CallbackData: "q:audio"},
+	})
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+// buildVideoAudioKeyboard renders step 2 for the video branch: with or
+// without an audio track muxed in.
+func buildVideoAudioKeyboard() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		{{Text: "🔊 With audio", CallbackData: "va:1"}},
+		{{Text: "🔇 Without audio", CallbackData: "va:0"}},
+	}}
+}
+
+// buildAudioFormatKeyboard renders step 2 for the audio branch: one button
+// per target codec, first entry marked as the default.
+func buildAudioFormatKeyboard(audioFormats []string) *models.InlineKeyboardMarkup {
+	var rows [][]models.InlineKeyboardButton
+	for i, f := range audioFormats {
+		label := strings.ToUpper(f)
+		if i == 0 {
+			label += " (default)"
+		}
+		rows = append(rows, []models.InlineKeyboardButton{
+			{Text: label, CallbackData: "af:" + f},
 		})
 	}
 	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
-// formatLabel builds a human-readable button label for a yt-dlp format.
-func formatLabel(f amqpclient.FormatMessage) string {
-	var parts []string
-
-	quality := f.FormatNote
-	if quality == "" {
-		quality = f.Resolution
+// heightLabel renders a quality tier button label, using the "4K" shorthand
+// for 2160p.
+func heightLabel(height int) string {
+	if height == 2160 {
+		return "4K (2160p)"
 	}
-	if quality == "" {
-		quality = "audio"
-	}
-	parts = append(parts, quality)
-
-	if f.Ext != "" {
-		parts = append(parts, f.Ext)
-	}
-
-	switch {
-	case f.Filesize > 0:
-		parts = append(parts, fmt.Sprintf("%.1f MiB", float64(f.Filesize)/(1024*1024)))
-	case f.TBR > 0:
-		parts = append(parts, fmt.Sprintf("%.0f kbps", f.TBR))
-	}
-
-	return strings.Join(parts, " • ")
-}
-
-// formatToRequest builds a DownloadRequest for the chosen format.
-func formatToRequest(url, title string, f amqpclient.FormatMessage) amqpclient.DownloadRequest {
-	req := amqpclient.DownloadRequest{
-		URL:          url,
-		Title:        title,
-		QualityLabel: qualityLabel(f),
-		AudioOnly:    f.AudioOnly,
-	}
-	if f.VideoOnly {
-		// Mux the video-only stream with the best available audio.
-		req.FormatArg = f.FormatID + "+bestaudio"
-		req.OutputFormat = "mp4"
-	} else {
-		req.FormatArg = f.FormatID
-	}
-	return req
-}
-
-func qualityLabel(f amqpclient.FormatMessage) string {
-	if f.FormatNote != "" {
-		return f.FormatNote
-	}
-	if f.Resolution != "" {
-		return f.Resolution
-	}
-	return f.FormatID
+	return strconv.Itoa(height) + "p"
 }
