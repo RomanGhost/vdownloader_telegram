@@ -1,6 +1,6 @@
 # vdownloader_telegram
 
-Telegram bot front end for [vdownloader_worker](../vdownloader_worker/README.md). Talks to the worker over both HTTP (format lookup, job status, file download) and RabbitMQ (job submission, completion notification) — see the [root README](../README.md#architecture) for how the three services fit together.
+Telegram bot front end for [vdownloader_worker](https://github.com/RomanGhost/vdownloader_worker) (a separate repo). Talks to the worker over both HTTP (format lookup, job status, file download) and RabbitMQ (job submission, completion notification) — see [vdownloader_config](https://github.com/RomanGhost/vdownloader_config#architecture) (the repo that ties all four services together) for how they fit together.
 
 ## User flow
 
@@ -39,11 +39,11 @@ docker build -t vdownloader-telegram .
 docker run -it --env-file .env vdownloader-telegram
 ```
 
-No inbound port needed — the bot only makes outbound calls (Telegram long-polling, worker HTTP, RabbitMQ). See the repo root [docker-compose.yml](../docker-compose.yml) to run it alongside the worker and RabbitMQ; it reads `BOT_TOKEN` from this directory's `.env` via `env_file:`.
+No inbound port needed — the bot only makes outbound calls (Telegram long-polling, worker HTTP, RabbitMQ). See the [docker-compose.yml in vdownloader_config](https://github.com/RomanGhost/vdownloader_config/blob/main/docker-compose.yml) (a separate repo) to run it alongside the worker and RabbitMQ; that compose file pulls this service's prebuilt image and reads `BOT_TOKEN` from a `.env` file next to it.
 
 ## RabbitMQ contract
 
-Shares the wire format documented in [vdownloader_worker/README.md#rabbitmq-contract](../vdownloader_worker/README.md#rabbitmq-contract). Go types live in [internal/workerclient/client.go](internal/workerclient/client.go) (`DownloadRequest`, published to `video.jobs`; `GetFormatsResponse`, read from `GET /api/formats`) and [internal/bot/mq.go](internal/bot/mq.go) (`completedMessage`, consumed from `video.completed`).
+Shares the wire format documented in [vdownloader_worker's README](https://github.com/RomanGhost/vdownloader_worker/blob/main/README.md#rabbitmq-contract) (a separate repo). Go types live in [internal/workerclient/client.go](internal/workerclient/client.go) (`DownloadRequest`, published to `video.jobs`; `GetFormatsResponse`, read from `GET /api/formats`) and [internal/bot/mq.go](internal/bot/mq.go) (`completedMessage`, consumed from `video.completed`).
 
 `DownloadRequest.Duration` is echoed straight from `GetFormatsResponse.Duration` (captured in `userState` when the format list is first fetched) so the worker can size its download timeout without a second `yt-dlp -J` call.
 
@@ -96,4 +96,4 @@ No live Telegram bot, worker, or RabbitMQ needed:
 - `internal/bot/deliver_test.go` — `extractFilename` (Content-Disposition parsing), `escapeHTML`.
 - `internal/workerclient/client_test.go` — `GetFormats`/`GetJob` success and error paths against an `httptest.Server` standing in for the worker.
 
-Not covered: the `bot.HandlerType*` callback handlers in `handlers.go` (they take the `go-telegram/bot` library's own types, e.g. `*models.Update`, which aren't practical to construct without a real bot session) and the consume loop in `mq.go`. Those paths are exercised by the [repo root's end-to-end smoke test](../README.md#testing) instead — though that test only covers the web UI's submission path, not a real Telegram interaction, so a manual check via the actual bot is still worthwhile before deploying a change that touches `handlers.go` or `mq.go`.
+Not covered: the `bot.HandlerType*` callback handlers in `handlers.go` (they take the `go-telegram/bot` library's own types, e.g. `*models.Update`, which aren't practical to construct without a real bot session) and the consume loop in `mq.go`. Those paths are exercised by the [end-to-end smoke test in vdownloader_config](https://github.com/RomanGhost/vdownloader_config/blob/main/README.md#testing) instead — though that test only covers the web UI's submission path, not a real Telegram interaction, so a manual check via the actual bot is still worthwhile before deploying a change that touches `handlers.go` or `mq.go`.
